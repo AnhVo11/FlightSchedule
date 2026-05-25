@@ -1,17 +1,34 @@
-# Vietnam Airlines Year Schedule
+# FlightSchedule
 
-Get the full domestic schedule for Vietnam Airlines in under 1 hour, for free.
+Collect the full domestic flight schedule for all 6 Vietnamese airlines, for free.
+
+---
+
+## Airlines Covered
+
+| IATA | Airline |
+|------|---------|
+| VN   | Vietnam Airlines |
+| VJ   | Vietjet Air |
+| QH   | Bamboo Airways |
+| VU   | Vietravel Airlines |
+| BL   | Pacific Airlines |
+| 0V   | VASCO |
 
 ---
 
 ## Folder Structure
 
 ```
-flight_schedule/
-├── fetch_schedule.py   ← Step 1: pull data from API
-├── build_year.py       ← Step 2: expand into full year
-├── README.md           ← this file
-└── data/               ← create this empty folder manually
+FlightSchedule/
+├── fetch_today.py    ← Run every day for 7-14 days
+├── build_year.py     ← Run once after 7+ days of data
+├── README.md
+└── data/
+    ├── 2026-05-25.json     ← one file per day (auto created)
+    ├── 2026-05-26.json
+    ├── all_days.json        ← combined history (auto created)
+    └── vietnam_flights_2026.csv  ← final output
 ```
 
 ---
@@ -19,104 +36,48 @@ flight_schedule/
 ## Setup
 
 ```bash
-pip install requests
+pip3 install requests
 ```
 
-Get a **free API key** at: https://aviationstack.com/signup/free
-(Free tier = 100 requests/month — enough for this entire project)
+Get a free API key at: https://aviationstack.com/signup/free
 
 ---
 
-## Step 1: Fetch the raw schedule
+## Step 1 — Run every day for 7-14 days
 
 ```bash
-python fetch_schedule.py --key YOUR_API_KEY_HERE
+python3 fetch_today.py --key YOUR_API_KEY_HERE
 ```
 
-This makes ~11 API calls total:
-- 1 call for summer base day (Monday in June)
-- 1 call for winter base day (Monday in November)
-- 9 calls for Vietnamese public holidays
-
-Output: `data/vn_raw_schedule.json`
-
-### Want a more accurate weekly pattern?
-
-Uncomment the loop in `fetch_schedule.py` to fetch all 7 days of the week
-instead of just Monday. This uses 14 API calls instead of 2 for base schedules.
+Run this **once per day**. It will:
+- Fetch today's flights for all 6 airlines
+- Save them to `data/YYYY-MM-DD.json`
+- After 7+ days, automatically detect when the schedule repeats
+- Tell you when you can stop
 
 ---
 
-## Step 2: Build the full year
+## Step 2 — Build the full year (after 7+ days)
 
 ```bash
-python build_year.py --year 2026
+python3 build_year.py --year 2026
 ```
 
 Output:
-- `data/vn_full_year.csv`  ← open in Excel/Sheets
-- `data/vn_full_year.json` ← use in code
+- `data/vietnam_flights_2026.csv` ← open in Excel
+- `data/vietnam_flights_2026.json` ← use in code
 
 ---
 
-## Output Format
+## How duplicate detection works
 
-```
-date,flight_number,from_iata,from_name,to_iata,to_name,dep_time,arr_time,is_holiday
-2026-01-01,VN123,HAN,Noi Bai,SGN,Tan Son Nhat,06:00,08:05,False
-2026-01-01,VN201,SGN,Tan Son Nhat,DAD,Da Nang,07:30,08:45,False
-...
-```
+After 7 days you have one sample for each day of the week (Mon–Sun).
+The script compares each new day against the same weekday from the previous week.
+When 85%+ of flights match → the schedule is repeating → you can stop.
 
 ---
 
 ## All Airports Covered (21 total)
 
-| IATA | City | Tier |
-|------|------|------|
-| HAN  | Hanoi | Hub |
-| SGN  | Ho Chi Minh City | Hub |
-| DAD  | Da Nang | Hub |
-| HPH  | Hai Phong | Mid |
-| VII  | Vinh | Mid |
-| HUI  | Hue | Mid |
-| PQC  | Phu Quoc | Mid |
-| CXR  | Nha Trang | Mid |
-| UIH  | Quy Nhon | Mid |
-| DLI  | Da Lat | Mid |
-| BMV  | Buon Ma Thuot | Mid |
-| VCA  | Can Tho | Mid |
-| PXU  | Pleiku | Small |
-| VDH  | Dong Hoi | Small |
-| TBB  | Tuy Hoa | Small |
-| DIN  | Dien Bien Phu | Small |
-| VCS  | Con Dao | Small |
-| CAH  | Ca Mau | Small |
-| VKG  | Rach Gia | Small |
-| VCL  | Chu Lai | Small |
-| THD  | Thanh Hoa | Small |
-
----
-
-## How it works
-
-Airlines use 2 fixed seasons per year (IATA standard):
-- **Summer**: Late March → Late October
-- **Winter**: Late October → Late March
-
-The weekly schedule is identical within each season.
-So we only need to fetch 2 days to know the whole year,
-then expand them day-by-day while swapping in actual fetched
-data for holidays (when extra flights are added).
-
----
-
-## Vietnamese Public Holidays Covered
-
-| Holiday | Date |
-|---------|------|
-| New Year | Jan 1 |
-| Tết (4 days) | Late Jan / Early Feb |
-| Reunification Day | Apr 30 |
-| Labour Day | May 1 |
-| National Day | Sep 2 |
+HAN, SGN, DAD, HPH, VII, HUI, PQC, CXR, UIH, DLI,
+BMV, VCA, PXU, VDH, TBB, DIN, VCS, CAH, VKG, VCL, THD

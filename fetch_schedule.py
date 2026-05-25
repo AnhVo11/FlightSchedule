@@ -1,77 +1,56 @@
 """
-fetch_schedule.py
------------------
-Step 1: Fetch Vietnam Airlines domestic schedule from AviationStack.
-
-We only need 2 representative days:
-  - One day in Summer season (April–October)
-  - One day in Winter season (November–March)
-
-Then we also fetch ~10 holiday days separately.
+fetch_today.py
+--------------
+Run this script EVERY DAY to collect today's flights for all Vietnamese airlines.
+After 7-14 days it will detect when the weekly pattern repeats and tell you to stop.
 
 Usage:
-    pip install requests
-    python fetch_schedule.py --key YOUR_API_KEY
+    python3 fetch_today.py --key YOUR_API_KEY
+
+Run once per day, ideally at the same time each day (e.g. 8am).
 """
 
 import requests
 import json
 import time
 import argparse
-from datetime import date, timedelta
+from datetime import date, datetime
 from pathlib import Path
 
-# ─── Config ───────────────────────────────────────────────────────────────────
+# ─── All Vietnamese Airlines ──────────────────────────────────────────────────
 
-AIRLINE_IATA = "VN"  # Vietnam Airlines IATA code
+AIRLINES = {
+    "VN": "Vietnam Airlines",
+    "VJ": "Vietjet Air",
+    "QH": "Bamboo Airways",
+    "VU": "Vietravel Airlines",
+    "BL": "Pacific Airlines",
+    "0V": "VASCO",
+}
 
-# One representative weekday for each season
-# (Monday, so we capture full weekday schedule)
-SUMMER_SAMPLE_DATE = "2026-06-08"   # Monday in summer
-WINTER_SAMPLE_DATE = "2026-11-09"   # Monday in winter
-
-# ALL Vietnam domestic airports Vietnam Airlines serves
+# All Vietnam domestic airports
 VIETNAM_AIRPORTS = {
     "HAN", "SGN", "DAD", "HPH", "VII", "HUI", "PQC", "CXR",
     "UIH", "DLI", "BMV", "VCA", "PXU", "VDH", "TBB", "DIN",
     "VCS", "CAH", "VKG", "VCL", "THD",
 }
 
-# Vietnamese public holidays — scrape these separately
-# because extra flights are added around them
-HOLIDAY_DATES = [
-    "2027-01-01",  # New Year
-    "2027-01-28",  # Tet eve
-    "2027-01-29",  # Tet day 1
-    "2027-01-30",  # Tet day 2
-    "2027-01-31",  # Tet day 3
-    "2027-02-01",  # Tet day 4
-    "2027-04-30",  # Reunification Day
-    "2027-05-01",  # Labour Day
-    "2027-09-02",  # National Day
-]
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
 
-OUTPUT_DIR = Path("data")
-OUTPUT_DIR.mkdir(exist_ok=True)
+# ─── Fetch ────────────────────────────────────────────────────────────────────
 
-# ─── Fetcher ──────────────────────────────────────────────────────────────────
-
-def fetch_flights_for_date(api_key: str, flight_date: str) -> list[dict]:
-    """Fetch all VN domestic flights for a given date from AviationStack."""
-
+def fetch_airline_flights(api_key: str, airline_iata: str) -> list[dict]:
+    """Fetch real-time flights for one airline (free tier compatible)."""
     url = "http://api.aviationstack.com/v1/flights"
     all_flights = []
     offset = 0
-    limit = 100  # max per request on free tier
-
-    print(f"  Fetching {flight_date}...", end="", flush=True)
 
     while True:
         params = {
             "access_key": api_key,
-            "airline_iata": AIRLINE_IATA,
-            "flight_date": flight_date,
-            "limit": limit,
+            "airline_iata": airline_iata,
+            "limit": 100,
             "offset": offset,
         }
 
@@ -80,18 +59,18 @@ def fetch_flights_for_date(api_key: str, flight_date: str) -> list[dict]:
             resp.raise_for_status()
             data = resp.json()
         except requests.RequestException as e:
-            print(f"\n  ⚠️  Request failed: {e}")
+            print(f"    ⚠️  Request failed: {e}")
             break
 
         if "error" in data:
-            print(f"\n  ⚠️  API error: {data['error']['message']}")
+            print(f"    ⚠️  API error: {data['error']['message']}")
             break
 
         flights = data.get("data", [])
         if not flights:
             break
 
-        # Filter domestic Vietnam only — using complete airport set
+        # Filter domestic Vietnam only
         domestic = [
             f for f in flights
             if f.get("departure", {}).get("iata") in VIETNAM_AIRPORTS
@@ -99,100 +78,153 @@ def fetch_flights_for_date(api_key: str, flight_date: str) -> list[dict]:
         ]
         all_flights.extend(domestic)
 
-        # Paginate
         total = data.get("pagination", {}).get("total", 0)
-        offset += limit
+        offset += 100
         if offset >= total:
             break
 
-        time.sleep(0.5)  # be polite to the API
+        time.sleep(0.5)
 
-    print(f" {len(all_flights)} domestic flights found.")
     return all_flights
 
 
-def clean_flight(f: dict, sample_date: str) -> dict:
-    """Extract only the fields we care about from raw API response."""
+def clean_flight(f: dict, airline_name: str, today: str) -> dict:
     dep = f.get("departure", {})
     arr = f.get("arrival", {})
     flight = f.get("flight", {})
 
-    # Extract time only (HH:MM) — date will be reconstructed later
-    dep_time = (dep.get("scheduled") or "")[-14:-9] if dep.get("scheduled") else ""
-    arr_time = (arr.get("scheduled") or "")[-14:-9] if arr.get("scheduled") else ""
+    dep_scheduled = dep.get("scheduled", "")
+    arr_scheduled = arr.get("scheduled", "")
+
+    # Extract HH:MM from datetime string
+    dep_time = dep_scheduled[11:16] if len(dep_scheduled) >= 16 else ""
+    arr_time = arr_scheduled[11:16] if len(arr_scheduled) >= 16 else ""
 
     return {
+        "date": today,
+        "airline": airline_name,
         "flight_number": flight.get("iata", ""),
         "from_iata": dep.get("iata", ""),
         "from_name": dep.get("airport", ""),
         "to_iata": arr.get("iata", ""),
         "to_name": arr.get("airport", ""),
-        "dep_time": dep_time,   # e.g. "06:00"
-        "arr_time": arr_time,   # e.g. "08:05"
-        "weekday": date.fromisoformat(sample_date).weekday(),  # 0=Mon, 6=Sun
-        "sample_date": sample_date,
+        "dep_time": dep_time,
+        "arr_time": arr_time,
+        "status": f.get("flight_status", ""),
     }
+
+
+# ─── Duplicate Detection ──────────────────────────────────────────────────────
+
+def check_duplicates(today: str, today_flights: list[dict]) -> bool:
+    """
+    Compare today's flight numbers+times against all previous days.
+    If an exact match is found (same weekday, same flights), we're done.
+    """
+    history_file = DATA_DIR / "all_days.json"
+    if not history_file.exists():
+        return False
+
+    with open(history_file, encoding="utf-8") as f:
+        history = json.load(f)
+
+    today_date = date.fromisoformat(today)
+    today_weekday = today_date.weekday()
+
+    # Build a fingerprint: sorted set of "flight_number|dep_time" for today
+    today_fp = set(
+        f"{f['flight_number']}|{f['dep_time']}"
+        for f in today_flights
+        if f["flight_number"] and f["dep_time"]
+    )
+
+    for past_date_str, past_flights in history.items():
+        past_date = date.fromisoformat(past_date_str)
+        # Only compare same weekday
+        if past_date.weekday() != today_weekday:
+            continue
+        # Skip if less than 6 days apart (need at least 1 full week gap)
+        if abs((today_date - past_date).days) < 6:
+            continue
+
+        past_fp = set(
+            f"{f['flight_number']}|{f['dep_time']}"
+            for f in past_flights
+            if f["flight_number"] and f["dep_time"]
+        )
+
+        if not today_fp or not past_fp:
+            continue
+
+        # Check overlap percentage
+        overlap = len(today_fp & past_fp) / max(len(today_fp), len(past_fp))
+        if overlap >= 0.85:  # 85% match = same schedule
+            print(f"\n🔁 Schedule repeats! Today ({today}) matches {past_date_str}")
+            print(f"   Overlap: {overlap:.0%} — you can stop running this script.")
+            return True
+
+    return False
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Fetch Vietnam Airlines schedule")
+    parser = argparse.ArgumentParser(description="Fetch today's Vietnam flights")
     parser.add_argument("--key", required=True, help="Your AviationStack API key")
     args = parser.parse_args()
 
+    today = str(date.today())
     print("=" * 55)
-    print("  Vietnam Airlines Schedule Fetcher")
+    print(f"  Vietnam Flight Collector — {today}")
     print("=" * 55)
 
-    # --- Fetch summer and winter base schedules ---
-    print("\n📅 Fetching base schedules (2 days)...")
+    # Load existing history
+    history_file = DATA_DIR / "all_days.json"
+    if history_file.exists():
+        with open(history_file, encoding="utf-8") as f:
+            history = json.load(f)
+    else:
+        history = {}
 
-    summer_raw = fetch_flights_for_date(args.key, SUMMER_SAMPLE_DATE)
-    winter_raw = fetch_flights_for_date(args.key, WINTER_SAMPLE_DATE)
+    # Skip if already fetched today
+    if today in history:
+        print(f"\n✅ Already fetched today ({today}). Come back tomorrow!")
+        return
 
-    summer = [clean_flight(f, SUMMER_SAMPLE_DATE) for f in summer_raw]
-    winter = [clean_flight(f, WINTER_SAMPLE_DATE) for f in winter_raw]
+    # Fetch all airlines
+    all_today = []
+    for iata, name in AIRLINES.items():
+        print(f"\n✈️  {name} ({iata})...", end="", flush=True)
+        flights = fetch_airline_flights(args.key, iata)
+        cleaned = [clean_flight(f, name, today) for f in flights]
+        all_today.extend(cleaned)
+        print(f" {len(cleaned)} flights")
+        time.sleep(1)  # pause between airlines
 
-    # NOTE: The above only gives us Monday's schedule.
-    # For a complete weekly pattern, repeat for each day of the week.
-    # Uncomment below if you want all 7 days (uses 14 API calls total):
-    #
-    # for i in range(1, 7):
-    #     d = (date.fromisoformat(SUMMER_SAMPLE_DATE) + timedelta(days=i)).isoformat()
-    #     summer += [clean_flight(f, d) for f in fetch_flights_for_date(args.key, d)]
-    # ... same for winter
+    # Save today's data as its own file
+    day_file = DATA_DIR / f"{today}.json"
+    with open(day_file, "w", encoding="utf-8") as f:
+        json.dump(all_today, f, ensure_ascii=False, indent=2)
 
-    # --- Fetch holiday dates ---
-    print("\n🎉 Fetching holiday schedules...")
-    holidays = {}
-    for hdate in HOLIDAY_DATES:
-        raw = fetch_flights_for_date(args.key, hdate)
-        holidays[hdate] = [clean_flight(f, hdate) for f in raw]
-        time.sleep(1)
+    # Update history
+    history[today] = all_today
+    with open(history_file, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
 
-    # --- Save raw data ---
-    output = {
-        "meta": {
-            "airline": "Vietnam Airlines (VN)",
-            "summer_sample": SUMMER_SAMPLE_DATE,
-            "winter_sample": WINTER_SAMPLE_DATE,
-            "fetched_at": str(date.today()),
-        },
-        "summer_schedule": summer,
-        "winter_schedule": winter,
-        "holiday_schedules": holidays,
-    }
+    print(f"\n✅ Saved {len(all_today)} flights → data/{today}.json")
+    print(f"   Total days collected: {len(history)}")
 
-    out_file = OUTPUT_DIR / "vn_raw_schedule.json"
-    with open(out_file, "w", encoding="utf-8") as f:
-        json.dump(output, f, ensure_ascii=False, indent=2)
+    # Check if schedule has started repeating
+    is_duplicate = check_duplicates(today, all_today)
 
-    print(f"\n✅ Saved to {out_file}")
-    print(f"   Summer flights: {len(summer)}")
-    print(f"   Winter flights: {len(winter)}")
-    print(f"   Holiday days:   {len(holidays)}")
-    print("\n👉 Now run: python build_year.py")
+    if not is_duplicate:
+        days_left = max(0, 7 - len(history))
+        if days_left > 0:
+            print(f"\n📅 Keep running daily — about {days_left} more day(s) to go.")
+        else:
+            print(f"\n📅 {len(history)} days collected. Run again tomorrow to check for repeats.")
+
+    print("\n👉 To build the full year schedule: python3 build_year.py")
 
 
 if __name__ == "__main__":
